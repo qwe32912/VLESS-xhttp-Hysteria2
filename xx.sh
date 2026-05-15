@@ -24,17 +24,13 @@ get_status() {
     if [ -f "/usr/local/bin/xx" ]; then
         SCRIPT_STATUS="\033[32m已安装\033[0m (快捷命令: xx)"
     else
-        SCRIPT_STATUS="\033[31m未安装\033[0m (内存无痕运行中)"
+        SCRIPT_STATUS="\033[31m未安装\033[0m"
     fi
 
     # 3. 检查 Xray 状态、版本与更新
     if [ -f "/usr/local/bin/xray" ]; then
-        # 获取本地版本
         LOCAL_XRAY_VER=$(/usr/local/bin/xray version | head -n1 | awk '{print $2}')
-        # 去除可能存在的 'v' 前缀
         LOCAL_CLEAN=${LOCAL_XRAY_VER#v}
-        
-        # 获取 GitHub 最新版本号
         LATEST_XRAY_VER=$(curl -s --max-time 2 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v?([^"]+)".*/\1/')
         
         if [[ -z "$LATEST_XRAY_VER" ]]; then
@@ -74,8 +70,7 @@ uninstall() {
     rm -f /etc/systemd/system/hysteria-server@.service
     rm -f /etc/systemd/system/sub-server.service
     
-    rm -rf /etc/ssl/private/*
-    rm -rf /etc/ssl/certs/*
+    rm -rf /root/.acme.sh/
     
     systemctl daemon-reload
     
@@ -120,17 +115,20 @@ install() {
     if ! grep -q "net.ipv4.tcp_congestion_control" /etc/sysctl.conf; then
         echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-        sysctl -p
+        sysctl -p >/dev/null 2>&1
         echo -e "\033[32m[+] BBR 加速已成功开启。\033[0m"
     else
-        sysctl -p
+        sysctl -p >/dev/null 2>&1
         echo -e "\033[32m[+] BBR 已经处于配置状态。\033[0m"
     fi
 
     echo "[*] 正在安装基础环境依赖..."
     apt update && apt install -y curl wget socat jq openssl python3
 
-    mkdir -p /etc/ssl/private /etc/ssl/certs
+    # 修改为 Xray 有权访问的目录
+    mkdir -p /usr/local/etc/xray
+    CERT_FILE="/usr/local/etc/xray/server.cer"
+    KEY_FILE="/usr/local/etc/xray/server.key"
 
     if [ "$CERT_MODE" == "1" ]; then
         read -p "请输入已解析的域名 (如 proxy.example.com): " DOMAIN
@@ -147,12 +145,10 @@ install() {
         ~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone
 
         ~/.acme.sh/acme.sh --install-cert -d $DOMAIN \
-        --key-file       /etc/ssl/private/$DOMAIN.key  \
-        --fullchain-file /etc/ssl/certs/$DOMAIN.cer \
+        --key-file       $KEY_FILE  \
+        --fullchain-file $CERT_FILE \
         --reloadcmd     "systemctl restart xray && systemctl restart hysteria-server"
 
-        CERT_FILE="/etc/ssl/certs/$DOMAIN.cer"
-        KEY_FILE="/etc/ssl/private/$DOMAIN.key"
         HOST_ADDRESS=$DOMAIN
         SNI=$DOMAIN
     else
@@ -163,27 +159,25 @@ install() {
         echo "[*] 正在生成 10 年期自签证书..."
         SNI="www.bing.com"
         openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-            -keyout /etc/ssl/private/self_signed.key \
-            -out /etc/ssl/certs/self_signed.cer \
+            -keyout $KEY_FILE \
+            -out $CERT_FILE \
             -subj "/C=US/ST=CA/L=LosAngeles/O=Microsoft/CN=$SNI" >/dev/null 2>&1
             
-        CERT_FILE="/etc/ssl/certs/self_signed.cer"
-        KEY_FILE="/etc/ssl/private/self_signed.key"
         HOST_ADDRESS=$SERVER_IP
     fi
 
-    echo "[*] 正在部署/更新 Xray-core (开启强制 DNS 防泄露)..."
+    # 【极其关键】赋予 Xray 读取证书的权限，防止进程崩溃
+    chown nobody:nogroup "$CERT_FILE" "$KEY_FILE"
+    chmod 644 "$CERT_FILE" "$KEY_FILE"
+
+    echo "[*] 正在部署/更新 Xray-core..."
     bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
 cat > /usr/local/etc/xray/config.json <<EOF
 {
   "log": { "loglevel": "warning" },
   "dns": {
-    "servers": [
-      "https://1.1.1.1/dns-query",
-      "https://8.8.8.8/dns-query",
-      "localhost"
-    ]
+    "servers": [ "1.1.1.1", "8.8.8.8", "localhost" ]
   },
   "inbounds": [
     {
@@ -220,7 +214,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
 }
 EOF
 
-    echo "[*] 正在部署/更新 Hysteria2 (开启强制 DoH 解析)..."
+    echo "[*] 正在部署/更新 Hysteria2..."
     bash <(curl -fsSL https://get.hy2.sh/)
 
 cat > /etc/hysteria/config.yaml <<EOF
@@ -274,7 +268,6 @@ EOF
     systemctl enable xray hysteria-server sub-server
     systemctl restart xray hysteria-server sub-server
 
-    # === 核心：将脚本写入本地并设置快捷命令 ===
     echo "[*] 正在将管理菜单写入系统快捷命令..."
     wget -qO /usr/local/bin/xx "$SCRIPT_URL"
     chmod +x /usr/local/bin/xx
@@ -283,23 +276,17 @@ EOF
     echo "====================================================="
     echo -e "\033[32m                  部署全部完成！                     \033[0m"
     echo "====================================================="
-    if [ "$CERT_MODE" == "1" ]; then
-        echo "证书模式: Let's Encrypt 域名证书"
-    else
-        echo "证书模式: 纯 IP 自签证书 (⚠️客户端必须开启“允许不安全连接”)"
-    fi
-    echo "防泄露保护: Xray (UseIP + 1.1.1.1) | Hy2 (Cloudflare DoH)"
-    echo "====================================================="
     echo "【你的私密订阅链接】(直接复制到客户端更新订阅)"
     echo -e "🔗 \033[36mhttp://${HOST_ADDRESS}:${SUB_PORT}/${SUB_PATH}/\033[0m"
     echo "====================================================="
-    echo -e "\033[33m💡 提示: 快捷命令已经注册成功！\033[0m"
-    echo "以后随时在终端输入 xx 即可再次唤出本菜单"
+    echo -e "\033[33m💡 提示: 脚本已不再干预防火墙设置。\033[0m"
+    echo -e "\033[33m   如果出现超时连不上，请确保你的系统环境和云服务商\033[0m"
+    echo -e "\033[33m   安全组已经手动放行了以下端口：\033[0m"
+    echo -e "\033[33m   TCP: 80 (仅申请证书时用), $XRAY_PORT, $SUB_PORT\033[0m"
+    echo -e "\033[33m   UDP: $XRAY_PORT, $HY2_PORT\033[0m"
     echo "====================================================="
 }
 
-# ================= 主菜单渲染 =================
-# 在显示菜单前，先抓取系统状态
 get_status
 
 clear
