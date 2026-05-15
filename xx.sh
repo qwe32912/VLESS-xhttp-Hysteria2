@@ -139,7 +139,7 @@ install() {
         fi
         
         echo "[*] 正在通过 acme.sh 申请证书 (需 80 端口放行)..."
-        if ! curl -fsSL https://get.acme.sh | sh -s email="admin@$DOMAIN"; then
+        if ! curl -fsSL --max-time 15 https://get.acme.sh | sh -s email="admin@$DOMAIN"; then
             echo -e "\033[31m[-] acme.sh 安装失败，安装中止。\033[0m"
             exit 1
         fi
