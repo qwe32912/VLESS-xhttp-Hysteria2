@@ -2,17 +2,55 @@
 
 # ==========================================
 # 专属科学上网工具 (VLESS-xhttp + Hysteria2)
-# 支持内存无痕运行，安装后自动注册快捷命令
+# 特性: 状态看板 / 无痕运行 / 快捷命令 / 强制DNS
 # ==========================================
 
 # 确保以 root 运行
 if [[ $EUID -ne 0 ]]; then
-   echo "错误: 本脚本必须以 root 权限运行!" 
+   echo -e "\033[31m错误: 本脚本必须以 root 权限运行!\033[0m" 
    exit 1
 fi
 
 # 你的 GitHub 脚本原始地址
 SCRIPT_URL="https://raw.githubusercontent.com/qwe32912/VLESS-xhttp-Hysteria2/main/xx.sh"
+
+# ================= 状态获取 =================
+get_status() {
+    # 1. 获取 VPS IP
+    VPS_IP=$(curl -s4m 2 https://api.ipify.org)
+    [[ -z "$VPS_IP" ]] && VPS_IP="无法获取"
+
+    # 2. 检查脚本是否安装
+    if [ -f "/usr/local/bin/xx" ]; then
+        SCRIPT_STATUS="\033[32m已安装\033[0m (快捷命令: xx)"
+    else
+        SCRIPT_STATUS="\033[31m未安装\033[0m (内存无痕运行中)"
+    fi
+
+    # 3. 检查 Xray 状态、版本与更新
+    if [ -f "/usr/local/bin/xray" ]; then
+        # 获取本地版本
+        LOCAL_XRAY_VER=$(/usr/local/bin/xray version | head -n1 | awk '{print $2}')
+        # 去除可能存在的 'v' 前缀
+        LOCAL_CLEAN=${LOCAL_XRAY_VER#v}
+        
+        # 获取 GitHub 最新版本号
+        LATEST_XRAY_VER=$(curl -s --max-time 2 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v?([^"]+)".*/\1/')
+        
+        if [[ -z "$LATEST_XRAY_VER" ]]; then
+            XRAY_STATUS="\033[32m已安装\033[0m (v${LOCAL_CLEAN}) - \033[33m无法检测更新\033[0m"
+        else
+            LATEST_CLEAN=${LATEST_XRAY_VER#v}
+            if [[ "$LOCAL_CLEAN" != "$LATEST_CLEAN" ]]; then
+                XRAY_STATUS="\033[32m已安装\033[0m (v${LOCAL_CLEAN}) - \033[33m发现新版: v${LATEST_CLEAN}\033[0m"
+            else
+                XRAY_STATUS="\033[32m已安装\033[0m (v${LOCAL_CLEAN}) - \033[36m已是最新版\033[0m"
+            fi
+        fi
+    else
+        XRAY_STATUS="\033[31m未安装\033[0m"
+    fi
+}
 
 # ================= 卸载功能 =================
 uninstall() {
@@ -41,12 +79,12 @@ uninstall() {
     
     systemctl daemon-reload
     
-    echo "[+] 节点服务及配置文件已全部清理！"
+    echo -e "\033[32m[+] 节点服务及配置文件已全部清理！\033[0m"
     echo ""
     read -p "是否要连同快捷管理菜单 (xx) 一起删除？(y/n): " DEL_MENU
     if [[ "$DEL_MENU" == "y" || "$DEL_MENU" == "Y" ]]; then
         rm -f /usr/local/bin/xx
-        echo "[+] 快捷命令 xx 已删除。"
+        echo -e "\033[32m[+] 快捷命令 xx 已删除。\033[0m"
     fi
     exit 0
 }
@@ -83,10 +121,10 @@ install() {
         echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
         sysctl -p
-        echo "[+] BBR 加速已成功开启。"
+        echo -e "\033[32m[+] BBR 加速已成功开启。\033[0m"
     else
         sysctl -p
-        echo "[+] BBR 已经处于配置状态。"
+        echo -e "\033[32m[+] BBR 已经处于配置状态。\033[0m"
     fi
 
     echo "[*] 正在安装基础环境依赖..."
@@ -134,12 +172,19 @@ install() {
         HOST_ADDRESS=$SERVER_IP
     fi
 
-    echo "[*] 正在部署 Xray-core..."
+    echo "[*] 正在部署/更新 Xray-core (开启强制 DNS 防泄露)..."
     bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
 cat > /usr/local/etc/xray/config.json <<EOF
 {
   "log": { "loglevel": "warning" },
+  "dns": {
+    "servers": [
+      "https://1.1.1.1/dns-query",
+      "https://8.8.8.8/dns-query",
+      "localhost"
+    ]
+  },
   "inbounds": [
     {
       "port": $XRAY_PORT,
@@ -163,7 +208,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
     }
   ],
   "routing": {
-    "domainStrategy": "AsIs",
+    "domainStrategy": "UseIP",
     "rules": [
       { "type": "field", "outboundTag": "block", "ip": ["geoip:private"] }
     ]
@@ -175,7 +220,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
 }
 EOF
 
-    echo "[*] 正在部署 Hysteria2..."
+    echo "[*] 正在部署/更新 Hysteria2 (开启强制 DoH 解析)..."
     bash <(curl -fsSL https://get.hy2.sh/)
 
 cat > /etc/hysteria/config.yaml <<EOF
@@ -186,6 +231,10 @@ tls:
 auth:
   type: password
   password: $HY2_PASS
+resolver:
+  type: https
+  https:
+    url: https://cloudflare-dns.com/dns-query
 masquerade:
   type: proxy
   proxy:
@@ -225,41 +274,43 @@ EOF
     systemctl enable xray hysteria-server sub-server
     systemctl restart xray hysteria-server sub-server
 
-    # === 新增逻辑：将脚本写入本地并设置快捷命令 ===
+    # === 核心：将脚本写入本地并设置快捷命令 ===
     echo "[*] 正在将管理菜单写入系统快捷命令..."
     wget -qO /usr/local/bin/xx "$SCRIPT_URL"
     chmod +x /usr/local/bin/xx
 
     clear
     echo "====================================================="
-    echo "                  部署全部完成！                     "
+    echo -e "\033[32m                  部署全部完成！                     \033[0m"
     echo "====================================================="
     if [ "$CERT_MODE" == "1" ]; then
         echo "证书模式: Let's Encrypt 域名证书"
     else
         echo "证书模式: 纯 IP 自签证书 (⚠️客户端必须开启“允许不安全连接”)"
     fi
+    echo "防泄露保护: Xray (UseIP + 1.1.1.1) | Hy2 (Cloudflare DoH)"
     echo "====================================================="
     echo "【你的私密订阅链接】(直接复制到客户端更新订阅)"
-    echo "🔗 http://${HOST_ADDRESS}:${SUB_PORT}/${SUB_PATH}/"
+    echo -e "🔗 \033[36mhttp://${HOST_ADDRESS}:${SUB_PORT}/${SUB_PATH}/\033[0m"
     echo "====================================================="
-    echo "💡 提示: 快捷命令已经注册成功！"
+    echo -e "\033[33m💡 提示: 快捷命令已经注册成功！\033[0m"
     echo "以后随时在终端输入 xx 即可再次唤出本菜单"
     echo "====================================================="
 }
 
-# ================= 主菜单 =================
+# ================= 主菜单渲染 =================
+# 在显示菜单前，先抓取系统状态
+get_status
+
 clear
 echo "====================================================="
 echo "        专属科学上网搭建工具 (多协议极简版)        "
 echo "====================================================="
-if [ -f "/usr/local/bin/xx" ]; then
-    echo "  状态: 已安装快捷命令 (输入 xx 可唤出)"
-else
-    echo "  状态: 未安装快捷命令 (安装节点后自动写入)"
-fi
+echo -e "  本机 IP  : \033[36m${VPS_IP}\033[0m"
+echo -e "  脚本状态 : ${SCRIPT_STATUS}"
+echo -e "  Xray内核 : ${XRAY_STATUS}"
 echo "-----------------------------------------------------"
-echo "  1. 一键安装 (VLESS-xhttp + Hysteria2)"
+echo "  1. 一键安装 / 覆盖更新 (VLESS-xhttp + Hysteria2)"
 echo "  2. 一键完全卸载 (清理所有配置与进程)"
 echo "  0. 退出"
 echo "====================================================="
