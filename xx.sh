@@ -139,10 +139,18 @@ install() {
         fi
         
         echo "[*] 正在通过 acme.sh 申请证书 (需 80 端口放行)..."
-        if ! curl -fsSL --max-time 15 https://get.acme.sh | sh -s email="admin@$DOMAIN"; then
+        ACME_INSTALLER=$(mktemp)
+        if ! curl -fsSL --max-time 15 https://get.acme.sh -o "$ACME_INSTALLER"; then
+            rm -f "$ACME_INSTALLER"
+            echo -e "\033[31m[-] acme.sh 安装包下载失败，安装中止。\033[0m"
+            exit 1
+        fi
+        if ! sh "$ACME_INSTALLER" email="admin@$DOMAIN"; then
+            rm -f "$ACME_INSTALLER"
             echo -e "\033[31m[-] acme.sh 安装失败，安装中止。\033[0m"
             exit 1
         fi
+        rm -f "$ACME_INSTALLER"
         source ~/.bashrc
 
         ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
