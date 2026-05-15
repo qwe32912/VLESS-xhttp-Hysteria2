@@ -112,7 +112,7 @@ install() {
 
     echo ""
     echo "[*] 正在检查并开启 BBR 加速..."
-    if ! grep -Rqs "^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=[[:space:]]*" /etc/sysctl.conf /etc/sysctl.d 2>/dev/null; then
+    if ! grep -Rqs "^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=[[:space:]]*.*" /etc/sysctl.conf /etc/sysctl.d 2>/dev/null; then
         echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
         sysctl -p >/dev/null 2>&1
@@ -256,7 +256,7 @@ EOF
     fi
 
     mkdir -p "/opt/sub_server/$SUB_PATH"
-    echo -e "${VLESS_LINK}\n${HY2_LINK}" | base64 | tr -d '\n' > "/opt/sub_server/$SUB_PATH/index.html"
+    printf '%s\n%s' "$VLESS_LINK" "$HY2_LINK" | base64 | tr -d '\n' > "/opt/sub_server/$SUB_PATH/index.html"
 
 cat > /etc/systemd/system/sub-server.service <<EOF
 [Unit]
