@@ -2,7 +2,7 @@
 
 # ==========================================
 # 专属科学上网工具 (VLESS-xhttp + Hysteria2)
-# 全局快捷命令版
+# 支持内存无痕运行，安装后自动注册快捷命令
 # ==========================================
 
 # 确保以 root 运行
@@ -10,6 +10,9 @@ if [[ $EUID -ne 0 ]]; then
    echo "错误: 本脚本必须以 root 权限运行!" 
    exit 1
 fi
+
+# 你的 GitHub 脚本原始地址
+SCRIPT_URL="https://raw.githubusercontent.com/qwe32912/VLESS-xhttp-Hysteria2/main/xx.sh"
 
 # ================= 卸载功能 =================
 uninstall() {
@@ -40,7 +43,7 @@ uninstall() {
     
     echo "[+] 节点服务及配置文件已全部清理！"
     echo ""
-    read -p "是否要连同本菜单工具 (xx) 一起删除？(y/n): " DEL_MENU
+    read -p "是否要连同快捷管理菜单 (xx) 一起删除？(y/n): " DEL_MENU
     if [[ "$DEL_MENU" == "y" || "$DEL_MENU" == "Y" ]]; then
         rm -f /usr/local/bin/xx
         echo "[+] 快捷命令 xx 已删除。"
@@ -222,6 +225,11 @@ EOF
     systemctl enable xray hysteria-server sub-server
     systemctl restart xray hysteria-server sub-server
 
+    # === 新增逻辑：将脚本写入本地并设置快捷命令 ===
+    echo "[*] 正在将管理菜单写入系统快捷命令..."
+    wget -qO /usr/local/bin/xx "$SCRIPT_URL"
+    chmod +x /usr/local/bin/xx
+
     clear
     echo "====================================================="
     echo "                  部署全部完成！                     "
@@ -235,7 +243,8 @@ EOF
     echo "【你的私密订阅链接】(直接复制到客户端更新订阅)"
     echo "🔗 http://${HOST_ADDRESS}:${SUB_PORT}/${SUB_PATH}/"
     echo "====================================================="
-    echo "💡 提示: 以后随时在终端输入 xx 即可再次唤出本菜单"
+    echo "💡 提示: 快捷命令已经注册成功！"
+    echo "以后随时在终端输入 xx 即可再次唤出本菜单"
     echo "====================================================="
 }
 
@@ -244,7 +253,11 @@ clear
 echo "====================================================="
 echo "        专属科学上网搭建工具 (多协议极简版)        "
 echo "====================================================="
-echo "  快捷命令: xx 已生效，随时随地呼出面板"
+if [ -f "/usr/local/bin/xx" ]; then
+    echo "  状态: 已安装快捷命令 (输入 xx 可唤出)"
+else
+    echo "  状态: 未安装快捷命令 (安装节点后自动写入)"
+fi
 echo "-----------------------------------------------------"
 echo "  1. 一键安装 (VLESS-xhttp + Hysteria2)"
 echo "  2. 一键完全卸载 (清理所有配置与进程)"
