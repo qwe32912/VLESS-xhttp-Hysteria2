@@ -151,7 +151,7 @@ install() {
             exit 1
         }
 
-        ~/.acme.sh/acme.sh --install-cert -d $DOMAIN \
+        ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
         --key-file       $KEY_FILE  \
         --fullchain-file $CERT_FILE \
         --reloadcmd     "systemctl restart xray && systemctl restart hysteria-server"
@@ -159,7 +159,7 @@ install() {
         HOST_ADDRESS=$DOMAIN
         SNI=$DOMAIN
     else
-        DEFAULT_IP=$(curl -s4m 5 https://api.ipify.org)
+        DEFAULT_IP=$(curl -s -4 -m 5 https://api.ipify.org)
         read -p "请输入本机公网 IP (默认: $DEFAULT_IP): " SERVER_IP
         SERVER_IP=${SERVER_IP:-$DEFAULT_IP}
         
