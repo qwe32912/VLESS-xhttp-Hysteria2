@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==========================================
-# 专属管理工具 (VLESS-xhttp + Hysteria2)
-# 版本：3.0 终极版 (修复快捷键 + 增加自签模式)
+# 专属管理工具 (sing-box + Juicity)
+# 协议：VLESS-Reality / Hysteria2 / Juicity
 # ==========================================
 
 RED='\033[31m'
@@ -13,7 +13,7 @@ PLAIN='\033[0m'
 
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须以 root 权限运行!${PLAIN}" && exit 1
 
-# GitHub 脚本原始地址 (用于固化 xx 命令)
+# 远程脚本地址（用于 xx 命令同步）
 SCRIPT_URL="https://raw.githubusercontent.com/qwe32912/VLESS-xhttp-Hysteria2/main/xx.sh"
 
 # ================= 状态获取 =================
@@ -21,52 +21,38 @@ SCRIPT_URL="https://raw.githubusercontent.com/qwe32912/VLESS-xhttp-Hysteria2/mai
 get_status() {
     VPS_IP=$(curl -s4m 2 https://api.ipify.org || echo "无法获取")
     
-    # 核心安装判定
-    if [[ -f "/usr/local/bin/xray" && -f "/usr/local/bin/hysteria" ]]; then
-        if ss -tulpn | grep -qE ":(443|8443|25500) " ; then
-            NODE_STATUS="${GREEN}运行中 (已通过端口实测)${PLAIN}"
-        else
-            NODE_STATUS="${YELLOW}已安装 (服务异常或未启动)${PLAIN}"
-        fi
+    # 检查 sing-box
+    if [[ -f "/usr/local/bin/sing-box" ]]; then
+        SB_VER=$(/usr/local/bin/sing-box version | head -n1 | awk '{print $3}')
+        SB_STATUS="${GREEN}运行中 ($SB_VER)${PLAIN}"
     else
-        NODE_STATUS="${RED}未安装${PLAIN}"
+        SB_STATUS="${RED}未安装${PLAIN}"
     fi
 
+    # 检查 Juicity
+    [[ -f "/usr/local/bin/juicity-server" ]] && J_STATUS="${GREEN}已就绪${PLAIN}" || J_STATUS="${RED}未安装${PLAIN}"
+
     # BBR 状态
-    BBR_STATUS="${RED}未开启${PLAIN}"
-    [[ $(sysctl net.ipv4.tcp_congestion_control | awk '{print $3}') == "bbr" ]] && BBR_STATUS="${GREEN}已开启${PLAIN}"
+    [[ $(sysctl net.ipv4.tcp_congestion_control | awk '{print $3}') == "bbr" ]] && BBR_STATUS="${GREEN}已开启${PLAIN}" || BBR_STATUS="${RED}未开启${PLAIN}"
 
-    # 订阅信息
-    [[ -f "/etc/vproxy/sub_info.txt" ]] && LOCAL_SUB_URL=$(cat "/etc/vproxy/sub_info.txt") || LOCAL_SUB_URL="${YELLOW}暂无订阅链接${PLAIN}"
+    # 订阅链接
+    [[ -f "/etc/sing-box/sub_info.txt" ]] && LOCAL_SUB_URL=$(cat "/etc/sing-box/sub_info.txt") || LOCAL_SUB_URL="${YELLOW}暂无订阅链接${PLAIN}"
 }
 
-# ================= 证书生成 (自签模式) =================
+# ================= 辅助工具 =================
 
-gen_self_signed_cert() {
-    local cert_dir=$1
-    local ip=$2
-    echo -e "${BLUE}正在生成 IP 自签证书...${PLAIN}"
-    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-        -keyout "$cert_dir/server.key" \
-        -out "$cert_dir/server.cer" \
-        -subj "/C=US/ST=Mars/L=Space/O=SpaceX/CN=$ip" >/dev/null 2>&1
-}
-
-# ================= 连通性工具 =================
-
-check_connectivity() {
+check_port() {
     sleep 3
-    ss -tulpn | grep -q ":$1 " && echo -e "$2 ($1): ${GREEN}正常 (监听中)${PLAIN}" || echo -e "$2 ($1): ${RED}异常 (未响应)${PLAIN}"
+    ss -tulpn | grep -q ":$1 " && echo -e "$2 ($1): ${GREEN}正常${PLAIN}" || echo -e "$2 ($1): ${RED}未监听 (异常)${PLAIN}"
 }
 
 # ================= 卸载逻辑 =================
 
 uninstall() {
-    echo -e "${YELLOW}正在安全卸载...${PLAIN}"
-    systemctl stop xray hysteria-server sub-server 2>/dev/null
-    systemctl disable xray hysteria-server sub-server 2>/dev/null
-    [[ -f "/etc/vproxy/domain.txt" ]] && ~/.acme.sh/acme.sh --remove -d $(cat /etc/vproxy/domain.txt) >/dev/null 2>&1
-    rm -rf /etc/vproxy /usr/local/etc/xray /etc/hysteria /opt/sub_server /usr/local/bin/xray /usr/local/bin/hysteria /usr/local/bin/xx
+    echo -e "${YELLOW}正在清理所有服务与残留...${PLAIN}"
+    systemctl stop sing-box juicity-server sub-server 2>/dev/null
+    systemctl disable sing-box juicity-server sub-server 2>/dev/null
+    rm -rf /etc/sing-box /usr/local/bin/sing-box /etc/juicity /usr/local/bin/juicity-server /opt/sub_server /usr/local/bin/xx
     systemctl daemon-reload
     echo -e "${GREEN}卸载完成。${PLAIN}"
     exit 0
@@ -76,118 +62,105 @@ uninstall() {
 
 install() {
     clear
-    echo -e "${BLUE}--- 部署配置 ---${PLAIN}"
-    echo -e "1. 使用域名 (自动申请证书)"
-    echo -e "2. 无域名 / 纯IP (使用自签证书)"
-    read -p "请选择 [1-2] (默认1): " CERT_MODE
-    CERT_MODE=${CERT_MODE:-1}
+    echo -e "${BLUE}--- sing-box 多协议部署配置 ---${PLAIN}"
+    read -p "1. Reality 目标网站 (默认 www.google.com:443): " REALITY_DEST
+    REALITY_DEST=${REALITY_DEST:-"www.google.com:443"}
+    read -p "2. Reality 端口 (默认 443): " R_PORT
+    R_PORT=${R_PORT:-443}
+    read -p "3. Hy2 端口 (默认 8443): " H_PORT
+    H_PORT=${H_PORT:-8443}
+    read -p "4. Juicity 端口 (默认 9443): " J_PORT
+    J_PORT=${J_PORT:-9443}
+    read -p "5. 订阅端口 (默认 25500): " S_PORT
+    S_PORT=${S_PORT:-25500}
 
-    if [[ "$CERT_MODE" == "1" ]]; then
-        read -p "请输入已解析的域名: " DOMAIN
-        [[ -z "$DOMAIN" ]] && exit 1
-        IS_INSECURE="0"
-    else
-        DOMAIN=$(curl -s4m 2 https://api.ipify.org)
-        echo -e "${YELLOW}检测到公网 IP: $DOMAIN，将使用自签证书模式${PLAIN}"
-        IS_INSECURE="1"
-    fi
+    # 环境准备
+    apt update -y && apt install -y curl wget jq openssl python3 lsof ca-certificates
+    
+    # 安装 sing-box
+    echo -e "${BLUE}正在安装 sing-box...${PLAIN}"
+    bash <(curl -fsSL https://sing-box.app/deb-install.sh)
+    
+    # 安装 Juicity
+    echo -e "${BLUE}正在安装 Juicity...${PLAIN}"
+    J_VER=$(curl -s https://api.github.com/repos/juicity/juicity/releases/latest | jq -r .tag_name)
+    wget -qO juicity.tar.gz "https://github.com/juicity/juicity/releases/download/${J_VER}/juicity-server-linux-amd64.tar.gz"
+    tar -zxf juicity.tar.gz && mv juicity-server /usr/local/bin/ && chmod +x /usr/local/bin/juicity-server
+    rm -f juicity.tar.gz
 
-    read -p "Xray 端口 (默认 443): " X_PORT; X_PORT=${X_PORT:-443}
-    read -p "Hy2 端口 (默认 8443): " H_PORT; H_PORT=${H_PORT:-8443}
-    read -p "订阅端口 (默认 25500): " S_PORT; S_PORT=${S_PORT:-25500}
-
-    # 基础环境
-    apt update -y && apt install -y curl wget socat jq openssl python3 lsof ca-certificates
-    update-ca-certificates --fresh >/dev/null 2>&1
-
+    # 生成密钥
     UUID=$(cat /proc/sys/kernel/random/uuid)
-    X_PATH=$(tr -dc a-z0-9 </dev/urandom | head -c 8)
-    S_PATH=$(tr -dc a-z0-9 </dev/urandom | head -c 10)
+    # Reality 密钥对
+    RE_KEYS=$(/usr/local/bin/sing-box generate reality-keypair)
+    PRIVATE_KEY=$(echo "$RE_KEYS" | grep "Private key" | awk '{print $3}')
+    PUBLIC_KEY=$(echo "$RE_KEYS" | grep "Public key" | awk '{print $3}')
+    SHORT_ID=$(openssl rand -hex 8)
+    
+    # 证书处理 (Hy2 & Juicity 使用自签)
     CERT_DIR="/etc/vproxy"; mkdir -p $CERT_DIR
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout "$CERT_DIR/server.key" -out "$CERT_DIR/server.cer" -subj "/CN=$VPS_IP" >/dev/null 2>&1
 
-    # 证书处理
-    if [[ "$CERT_MODE" == "1" ]]; then
-        echo "$DOMAIN" > $CERT_DIR/domain.txt
-        lsof -i:80 | awk 'NR==2 {print $2}' | xargs kill -9 2>/dev/null
-        [[ ! -f "$HOME/.acme.sh/acme.sh" ]] && curl -Lk https://get.acme.sh | sh -s email=admin@$DOMAIN
-        ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-        ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --force --insecure
-        ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --key-file "$CERT_DIR/server.key" --fullchain-file "$CERT_DIR/server.cer"
-    else
-        gen_self_signed_cert $CERT_DIR $DOMAIN
-        SNI="www.bing.com" # 自签模式混淆域名
-    fi
-    chmod 644 $CERT_DIR/*
-
-    # 下载安装
-    bash -c "$(curl -Lk https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-    bash <(curl -fsSLk https://get.hy2.sh/)
-    X_BIN=$(which xray); H_BIN=$(which hysteria)
-
-    # 写入配置 (略...保持逻辑严谨)
-    mkdir -p /usr/local/etc/xray /etc/hysteria
-    # Xray Config
-    cat > /usr/local/etc/xray/config.json <<EOF
+    # 写入 sing-box 配置 (Reality + Hy2)
+    mkdir -p /etc/sing-box
+    cat > /etc/sing-box/config.json <<EOF
 {
-  "log": { "loglevel": "warning" },
-  "inbounds": [{
-    "port": $X_PORT, "protocol": "vless",
-    "settings": { "clients": [{"id": "$UUID"}], "decryption": "none" },
-    "streamSettings": {
-      "network": "xhttp", "security": "tls",
-      "tlsSettings": { "certificates": [{"certificateFile": "$CERT_DIR/server.cer", "keyFile": "$CERT_DIR/server.key"}] },
-      "xhttpSettings": { "mode": "auto", "host": "${SNI:-$DOMAIN}", "path": "/$X_PATH" }
+  "log": { "level": "warn" },
+  "inbounds": [
+    {
+      "type": "vless", "tag": "vless-reality", "listen": "::", "listen_port": $R_PORT,
+      "users": [{ "uuid": "$UUID", "flow": "xtls-rprx-vision" }],
+      "tls": {
+        "enabled": true, "server_name": "$(echo $REALITY_DEST | cut -d: -f1)",
+        "reality": { "enabled": true, "handshake": { "server": "$(echo $REALITY_DEST | cut -d: -f1)", "server_port": $(echo $REALITY_DEST | cut -d: -f2) }, "private_key": "$PRIVATE_KEY", "short_id": ["$SHORT_ID"] }
+      }
+    },
+    {
+      "type": "hysteria2", "tag": "hy2-in", "listen": "::", "listen_port": $H_PORT,
+      "users": [{ "password": "$UUID" }],
+      "tls": { "enabled": true, "certificate_path": "$CERT_DIR/server.cer", "key_path": "$CERT_DIR/server.key" }
     }
-  }]
+  ],
+  "outbounds": [{ "type": "direct" }]
 }
 EOF
-    # Hy2 Config
-    cat > /etc/hysteria/config.yaml <<EOF
-listen: :$H_PORT
-tls:
-  cert: $CERT_DIR/server.cer
-  key: $CERT_DIR/server.key
-auth:
-  type: password
-  password: $UUID
-masquerade:
-  type: proxy
-  proxy:
-    url: https://www.bing.com
-    rewriteHost: true
+
+    # 写入 Juicity 配置
+    mkdir -p /etc/juicity
+    cat > /etc/juicity/config.json <<EOF
+{
+  "listen": ":$J_PORT",
+  "users": { "$UUID": "$UUID" },
+  "certificate": "$CERT_DIR/server.cer",
+  "private_key": "$CERT_DIR/server.key",
+  "congestion_control": "bbr",
+  "log_level": "info"
+}
 EOF
 
-    # Service 文件与启动 (代码省略...逻辑与前述一致)
-    cat > /etc/systemd/system/xray.service <<EOF
+    # 写入 Service
+    cat > /etc/systemd/system/juicity-server.service <<EOF
 [Unit]
-Description=Xray
+Description=Juicity Server
 After=network.target
 [Service]
-User=root
-ExecStart=$X_BIN run -config /usr/local/etc/xray/config.json
+ExecStart=/usr/local/bin/juicity-server -c /etc/juicity/config.json
 Restart=always
-[Install]
-WantedBy=multi-user.target
-EOF
-    cat > /etc/systemd/system/hysteria-server.service <<EOF
-[Unit]
-Description=Hy2
-After=network.target
-[Service]
 User=root
-ExecStart=$H_BIN server -c /etc/hysteria/config.yaml
-Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # 订阅与 Python Server (略)
+    # 订阅与 Python Server
+    S_PATH=$(tr -dc a-z0-9 </dev/urandom | head -c 10)
     mkdir -p "/opt/sub_server/$S_PATH"
-    V_LINK="vless://${UUID}@${DOMAIN}:${X_PORT}?encryption=none&security=tls&type=xhttp&host=${SNI:-$DOMAIN}&sni=${SNI:-$DOMAIN}&path=%2F${X_PATH}$([[ "$IS_INSECURE" == "1" ]] && echo "&allowInsecure=1")#VLESS-xhttp"
-    H_LINK="hy2://${UUID}@${DOMAIN}:${H_PORT}/?sni=${SNI:-$DOMAIN}$([[ "$IS_INSECURE" == "1" ]] && echo "&insecure=1")#Hysteria2"
-    printf '%s\n' "$V_LINK" "$H_LINK" | base64 | tr -d '\n' > "/opt/sub_server/$S_PATH/index.html"
     
-    echo "http://${DOMAIN}:${S_PORT}/${S_PATH}/" > "/etc/vproxy/sub_info.txt"
+    # 生成链接
+    L_RE="vless://${UUID}@${VPS_IP}:${R_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$(echo $REALITY_DEST | cut -d: -f1)&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}#Reality-singbox"
+    L_HY="hy2://${UUID}@${VPS_IP}:${H_PORT}/?insecure=1&sni=www.bing.com#Hysteria2-singbox"
+    L_JU="juicity://${UUID}:${UUID}@${VPS_IP}:${J_PORT}?sni=www.google.com&insecure=1#Juicity"
+    
+    printf '%s\n' "$L_RE" "$L_HY" "$L_JU" | base64 | tr -d '\n' > "/opt/sub_server/$S_PATH/index.html"
+    echo "http://${VPS_IP}:${S_PORT}/${S_PATH}/" > "/etc/sing-box/sub_info.txt"
 
     cat > /etc/systemd/system/sub-server.service <<EOF
 [Unit]
@@ -201,38 +174,42 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload && systemctl enable --now xray hysteria-server sub-server && systemctl restart xray hysteria-server sub-server
+    systemctl daemon-reload
+    systemctl enable --now sing-box juicity-server sub-server
+    systemctl restart sing-box juicity-server sub-server
 
-    # 【重要】固化快捷命令：直接从云端下载脚本到本地，解决 bash <(curl) 导致的 xx 失效
+    # 固化 xx 命令
     curl -Lk "$SCRIPT_URL" -o /usr/local/bin/xx && chmod +x /usr/local/bin/xx
 
     clear
     echo -e "${GREEN}=============================================${PLAIN}"
-    check_connectivity $X_PORT "VLESS-xhttp"
-    check_connectivity $H_PORT "Hysteria2"
+    check_port $R_PORT "VLESS-Reality"
+    check_port $H_PORT "Hysteria2"
+    check_port $J_PORT "Juicity"
     echo -e "---------------------------------------------"
-    echo -e "订阅链接: ${BLUE}$(cat /etc/vproxy/sub_info.txt)${PLAIN}"
-    echo -e "VLESS: ${YELLOW}$V_LINK${PLAIN}"
-    echo -e "Hy2: ${YELLOW}$H_LINK${PLAIN}"
-    echo -e "快捷管理: ${GREEN}xx${PLAIN}"
+    echo -e "订阅链接: ${BLUE}$(cat /etc/sing-box/sub_info.txt)${PLAIN}"
+    echo -e "Reality: ${YELLOW}$L_RE${PLAIN}"
+    echo -e "Hy2:     ${YELLOW}$L_HY${PLAIN}"
+    echo -e "Juicity: ${YELLOW}$L_JU${PLAIN}"
     echo -e "${GREEN}=============================================${PLAIN}"
-    read -p "回车返回菜单..."
+    read -p "回车返回主菜单..."
 }
 
-# ================= 菜单 =================
+# ================= 循环主菜单 =================
 
 while true; do
     get_status
     clear
     echo "====================================================="
-    echo -e "           专属管理看板 ${BLUE}(自签/自愈版)${PLAIN}"
+    echo -e "           sing-box 综合管理看板 ${BLUE}(v3.0)${PLAIN}"
     echo "====================================================="
     echo -e "  本机 IP   : ${BLUE}${VPS_IP}${PLAIN}"
-    echo -e "  节点状态  : ${NODE_STATUS}"
-    echo -e "  BBR 状态  : ${BBR_STATUS}"
+    echo -e "  sing-box  : ${SB_STATUS}"
+    echo -e "  Juicity   : ${J_STATUS}"
+    echo -e "  BBR 加速  : ${BBR_STATUS}"
     echo -e "  订阅链接  : ${BLUE}${LOCAL_SUB_URL}${PLAIN}"
     echo "-----------------------------------------------------"
-    echo "  1. 一键安装 / 覆盖更新 (支持域名/IP自签)"
+    echo "  1. 一键安装 / 覆盖更新 (Reality/Hy2/Juicity)"
     echo "  2. 开启 BBR 加速"
     echo "  3. 一键完全卸载"
     echo "  0. 退出"
@@ -241,11 +218,9 @@ while true; do
     case $CHOICE in
         1) install ;;
         2) 
-            sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
-            sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
             echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
             echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-            sysctl -p >/dev/null 2>&1 && echo "BBR已开启" && sleep 2 ;;
+            sysctl -p >/dev/null 2>&1 && sleep 2 ;;
         3) uninstall ;;
         *) exit 0 ;;
     esac
