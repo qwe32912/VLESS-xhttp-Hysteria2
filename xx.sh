@@ -112,7 +112,7 @@ install() {
 
     echo ""
     echo "[*] 正在检查并开启 BBR 加速..."
-    if ! grep -Rqs "^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=" /etc/sysctl.conf /etc/sysctl.d 2>/dev/null; then
+    if ! grep -Rqs "^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=[[:space:]]*" /etc/sysctl.conf /etc/sysctl.d 2>/dev/null; then
         echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
         sysctl -p >/dev/null 2>&1
@@ -160,6 +160,9 @@ install() {
         SNI=$DOMAIN
     else
         DEFAULT_IP=$(curl -s -4 -m 5 https://api.ipify.org)
+        if [ -z "$DEFAULT_IP" ]; then
+            echo -e "\033[33m[!] 无法自动获取公网 IP，请手动输入。\033[0m"
+        fi
         read -p "请输入本机公网 IP (默认: $DEFAULT_IP): " SERVER_IP
         SERVER_IP=${SERVER_IP:-$DEFAULT_IP}
         
@@ -252,8 +255,8 @@ EOF
         HY2_LINK="hy2://${HY2_PASS}@${HOST_ADDRESS}:${HY2_PORT}/?sni=${SNI}&insecure=1#Hysteria2(IP自签)"
     fi
 
-    mkdir -p /opt/sub_server/$SUB_PATH
-    echo -e "${VLESS_LINK}\n${HY2_LINK}" | base64 | tr -d '\n' > /opt/sub_server/$SUB_PATH/index.html
+    mkdir -p "/opt/sub_server/$SUB_PATH"
+    echo -e "${VLESS_LINK}\n${HY2_LINK}" | base64 | tr -d '\n' > "/opt/sub_server/$SUB_PATH/index.html"
 
 cat > /etc/systemd/system/sub-server.service <<EOF
 [Unit]
@@ -285,11 +288,17 @@ EOF
     if [ -f /usr/local/bin/xx ] && cmp -s "$TMP_SCRIPT" /usr/local/bin/xx; then
         echo -e "\033[32m[+] 当前脚本已是最新版本，跳过更新。\033[0m"
     else
+        if [ -f /usr/local/bin/xx ]; then
+            ACTION_DESC="更新"
+        else
+            ACTION_DESC="安装"
+        fi
         install -m 755 "$TMP_SCRIPT" /usr/local/bin/xx || {
             rm -f "$TMP_SCRIPT"
             echo -e "\033[31m[-] 写入快捷命令失败，安装中止。\033[0m"
             exit 1
         }
+        echo -e "\033[32m[+] 管理脚本${ACTION_DESC}完成。\033[0m"
     fi
     rm -f "$TMP_SCRIPT"
 
