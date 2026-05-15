@@ -112,7 +112,7 @@ install() {
 
     echo ""
     echo "[*] 正在检查并开启 BBR 加速..."
-    if ! grep -q "net.ipv4.tcp_congestion_control" /etc/sysctl.conf; then
+    if ! grep -Rqs "^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=[[:space:]]*bbr[[:space:]]*$" /etc/sysctl.conf /etc/sysctl.d 2>/dev/null; then
         echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
         sysctl -p >/dev/null 2>&1
@@ -123,7 +123,8 @@ install() {
     fi
 
     echo "[*] 正在安装基础环境依赖..."
-    apt update && apt install -y curl wget socat jq openssl python3
+    apt update || { echo -e "\033[31m[-] apt update 失败，安装中止。\033[0m"; exit 1; }
+    apt install -y curl wget socat jq openssl python3 || { echo -e "\033[31m[-] apt install 失败，安装中止。\033[0m"; exit 1; }
 
     # 修改为 Xray 有权访问的目录
     mkdir -p /usr/local/etc/xray
@@ -138,29 +139,50 @@ install() {
         fi
         
         echo "[*] 正在通过 acme.sh 申请证书 (需 80 端口放行)..."
-        curl https://get.acme.sh | sh -s email=admin@$DOMAIN
+        ACME_INSTALLER=$(mktemp)
+        if ! curl -fsSL --max-time 15 https://get.acme.sh -o "$ACME_INSTALLER"; then
+            rm -f "$ACME_INSTALLER"
+            echo -e "\033[31m[-] acme.sh 安装包下载失败，安装中止。\033[0m"
+            exit 1
+        fi
+        if ! sh "$ACME_INSTALLER" email="admin@$DOMAIN"; then
+            rm -f "$ACME_INSTALLER"
+            echo -e "\033[31m[-] acme.sh 安装失败，安装中止。\033[0m"
+            exit 1
+        fi
+        rm -f "$ACME_INSTALLER"
         source ~/.bashrc
 
         ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-        ~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone
+        ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone || {
+            echo -e "\033[31m[-] 证书申请失败，安装中止。\033[0m"
+            exit 1
+        }
 
-        ~/.acme.sh/acme.sh --install-cert -d $DOMAIN \
-        --key-file       $KEY_FILE  \
-        --fullchain-file $CERT_FILE \
+        ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
+        --key-file       "$KEY_FILE"  \
+        --fullchain-file "$CERT_FILE" \
         --reloadcmd     "systemctl restart xray && systemctl restart hysteria-server"
 
         HOST_ADDRESS=$DOMAIN
         SNI=$DOMAIN
     else
-        DEFAULT_IP=$(curl -s4 https://api.ipify.org)
+        DEFAULT_IP=$(curl -fsS -4 --max-time 5 https://api.ipify.org 2>/dev/null)
+        if [ -z "$DEFAULT_IP" ]; then
+            echo -e "\033[33m[!] 无法自动获取公网 IP，请手动输入。\033[0m"
+        fi
         read -p "请输入本机公网 IP (默认: $DEFAULT_IP): " SERVER_IP
         SERVER_IP=${SERVER_IP:-$DEFAULT_IP}
+        if [ -z "$SERVER_IP" ]; then
+            echo -e "\033[31m[-] 未提供有效公网 IP，安装中止。\033[0m"
+            exit 1
+        fi
         
         echo "[*] 正在生成 10 年期自签证书..."
         SNI="www.bing.com"
         openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-            -keyout $KEY_FILE \
-            -out $CERT_FILE \
+            -keyout "$KEY_FILE" \
+            -out "$CERT_FILE" \
             -subj "/C=US/ST=CA/L=LosAngeles/O=Microsoft/CN=$SNI" >/dev/null 2>&1
             
         HOST_ADDRESS=$SERVER_IP
@@ -245,8 +267,8 @@ EOF
         HY2_LINK="hy2://${HY2_PASS}@${HOST_ADDRESS}:${HY2_PORT}/?sni=${SNI}&insecure=1#Hysteria2(IP自签)"
     fi
 
-    mkdir -p /opt/sub_server/$SUB_PATH
-    echo -e "${VLESS_LINK}\n${HY2_LINK}" | base64 -w 0 > /opt/sub_server/$SUB_PATH/index.html
+    mkdir -p "/opt/sub_server/$SUB_PATH"
+    printf '%s\n' "$VLESS_LINK" "$HY2_LINK" | base64 | tr -d '\n' > "/opt/sub_server/$SUB_PATH/index.html"
 
 cat > /etc/systemd/system/sub-server.service <<EOF
 [Unit]
@@ -269,8 +291,28 @@ EOF
     systemctl restart xray hysteria-server sub-server
 
     echo "[*] 正在将管理菜单写入系统快捷命令..."
-    wget -qO /usr/local/bin/xx "$SCRIPT_URL"
-    chmod +x /usr/local/bin/xx
+    TMP_SCRIPT=$(mktemp)
+    if ! curl -fsSL --max-time 10 "$SCRIPT_URL" -o "$TMP_SCRIPT"; then
+        rm -f "$TMP_SCRIPT"
+        echo -e "\033[31m[-] 下载最新脚本失败，安装中止。\033[0m"
+        exit 1
+    fi
+    if [ -f /usr/local/bin/xx ] && cmp -s "$TMP_SCRIPT" /usr/local/bin/xx; then
+        echo -e "\033[32m[+] 当前脚本已是最新版本，跳过更新。\033[0m"
+    else
+        if [ -f /usr/local/bin/xx ]; then
+            ACTION_DESC="更新"
+        else
+            ACTION_DESC="安装"
+        fi
+        install -m 755 "$TMP_SCRIPT" /usr/local/bin/xx || {
+            rm -f "$TMP_SCRIPT"
+            echo -e "\033[31m[-] 写入快捷命令失败，安装中止。\033[0m"
+            exit 1
+        }
+        echo -e "\033[32m[+] 管理脚本${ACTION_DESC}完成。\033[0m"
+    fi
+    rm -f "$TMP_SCRIPT"
 
     clear
     echo "====================================================="
