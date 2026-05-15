@@ -181,8 +181,8 @@ install() {
         echo "[*] 正在生成 10 年期自签证书..."
         SNI="www.bing.com"
         openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-            -keyout $KEY_FILE \
-            -out $CERT_FILE \
+            -keyout "$KEY_FILE" \
+            -out "$CERT_FILE" \
             -subj "/C=US/ST=CA/L=LosAngeles/O=Microsoft/CN=$SNI" >/dev/null 2>&1
             
         HOST_ADDRESS=$SERVER_IP
@@ -268,7 +268,7 @@ EOF
     fi
 
     mkdir -p "/opt/sub_server/$SUB_PATH"
-    printf '%s\n%s' "$VLESS_LINK" "$HY2_LINK" | base64 | tr -d '\n' > "/opt/sub_server/$SUB_PATH/index.html"
+    printf '%s\n' "$VLESS_LINK" "$HY2_LINK" | base64 | tr -d '\n' > "/opt/sub_server/$SUB_PATH/index.html"
 
 cat > /etc/systemd/system/sub-server.service <<EOF
 [Unit]
