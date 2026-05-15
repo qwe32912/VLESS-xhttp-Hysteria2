@@ -160,8 +160,8 @@ install() {
         }
 
         ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
-        --key-file       $KEY_FILE  \
-        --fullchain-file $CERT_FILE \
+        --key-file       "$KEY_FILE"  \
+        --fullchain-file "$CERT_FILE" \
         --reloadcmd     "systemctl restart xray && systemctl restart hysteria-server"
 
         HOST_ADDRESS=$DOMAIN
