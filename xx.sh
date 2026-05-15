@@ -167,7 +167,7 @@ install() {
         HOST_ADDRESS=$DOMAIN
         SNI=$DOMAIN
     else
-        DEFAULT_IP=$(curl -s -4 -m 5 https://api.ipify.org)
+        DEFAULT_IP=$(curl -fsS -4 --max-time 5 https://api.ipify.org 2>/dev/null)
         if [ -z "$DEFAULT_IP" ]; then
             echo -e "\033[33m[!] 无法自动获取公网 IP，请手动输入。\033[0m"
         fi
