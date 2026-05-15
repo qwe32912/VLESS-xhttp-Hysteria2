@@ -2,367 +2,235 @@
 
 # ==========================================
 # 专属科学上网工具 (VLESS-xhttp + Hysteria2)
-# 特性: 状态看板 / 无痕运行 / 快捷命令 / 强制DNS
+# 功能：状态看板 / 快捷命令 / 安全卸载 / BBR管理
 # ==========================================
 
-# 确保以 root 运行
-if [[ $EUID -ne 0 ]]; then
-   echo -e "\033[31m错误: 本脚本必须以 root 权限运行!\033[0m" 
-   exit 1
-fi
+RED='\033[31m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+BLUE='\033[36m'
+PLAIN='\033[0m'
 
-# 你的 GitHub 脚本原始地址
-SCRIPT_URL="https://raw.githubusercontent.com/qwe32912/VLESS-xhttp-Hysteria2/main/xx.sh"
+[[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须以 root 权限运行!${PLAIN}" && exit 1
 
 # ================= 状态获取 =================
+
 get_status() {
-    # 1. 获取 VPS IP
-    VPS_IP=$(curl -s4m 2 https://api.ipify.org)
-    [[ -z "$VPS_IP" ]] && VPS_IP="无法获取"
-
-    # 2. 检查脚本是否安装
-    if [ -f "/usr/local/bin/xx" ]; then
-        SCRIPT_STATUS="\033[32m已安装\033[0m (快捷命令: xx)"
-    else
-        SCRIPT_STATUS="\033[31m未安装\033[0m"
-    fi
-
-    # 3. 检查 Xray 状态、版本与更新
+    # 1. 获取 IP
+    VPS_IP=$(curl -s4m 2 https://api.ipify.org || echo "无法获取")
+    
+    # 2. 检查 Xray 状态
     if [ -f "/usr/local/bin/xray" ]; then
-        LOCAL_XRAY_VER=$(/usr/local/bin/xray version | head -n1 | awk '{print $2}')
-        LOCAL_CLEAN=${LOCAL_XRAY_VER#v}
-        LATEST_XRAY_VER=$(curl -s --max-time 2 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v?([^"]+)".*/\1/')
-        
-        if [[ -z "$LATEST_XRAY_VER" ]]; then
-            XRAY_STATUS="\033[32m已安装\033[0m (v${LOCAL_CLEAN}) - \033[33m无法检测更新\033[0m"
-        else
-            LATEST_CLEAN=${LATEST_XRAY_VER#v}
-            if [[ "$LOCAL_CLEAN" != "$LATEST_CLEAN" ]]; then
-                XRAY_STATUS="\033[32m已安装\033[0m (v${LOCAL_CLEAN}) - \033[33m发现新版: v${LATEST_CLEAN}\033[0m"
-            else
-                XRAY_STATUS="\033[32m已安装\033[0m (v${LOCAL_CLEAN}) - \033[36m已是最新版\033[0m"
-            fi
-        fi
+        XRAY_VER=$(/usr/local/bin/xray version | head -n1 | awk '{print $2}')
+        XRAY_STATUS="${GREEN}已安装 ($XRAY_VER)${PLAIN}"
     else
-        XRAY_STATUS="\033[31m未安装\033[0m"
+        XRAY_STATUS="${RED}未安装${PLAIN}"
+    fi
+
+    # 3. 检查 BBR 状态
+    if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+        BBR_STATUS="${GREEN}已开启${PLAIN}"
+    else
+        BBR_STATUS="${RED}未开启${PLAIN}"
+    fi
+
+    # 4. 检查脚本快捷命令
+    if [ -f "/usr/local/bin/xx" ]; then
+        SCRIPT_STATUS="${GREEN}已配置快捷命令 (xx)${PLAIN}"
+    else
+        SCRIPT_STATUS="${RED}未配置快捷命令${PLAIN}"
     fi
 }
 
-# ================= 卸载功能 =================
-uninstall() {
-    clear
-    echo "====================================================="
-    echo "                 正在执行一键卸载...                 "
-    echo "====================================================="
-    
-    systemctl stop xray hysteria-server sub-server 2>/dev/null
-    systemctl disable xray hysteria-server sub-server 2>/dev/null
-    
-    rm -rf /usr/local/etc/xray
-    rm -f /usr/local/bin/xray
-    rm -rf /etc/hysteria
-    rm -f /usr/local/bin/hysteria
-    rm -rf /opt/sub_server
-    
-    rm -f /etc/systemd/system/xray.service
-    rm -f /etc/systemd/system/xray@.service
-    rm -f /etc/systemd/system/hysteria-server.service
-    rm -f /etc/systemd/system/hysteria-server@.service
-    rm -f /etc/systemd/system/sub-server.service
-    
-    rm -rf /root/.acme.sh/
-    
-    systemctl daemon-reload
-    
-    echo -e "\033[32m[+] 节点服务及配置文件已全部清理！\033[0m"
-    echo ""
-    read -p "是否要连同快捷管理菜单 (xx) 一起删除？(y/n): " DEL_MENU
-    if [[ "$DEL_MENU" == "y" || "$DEL_MENU" == "Y" ]]; then
-        rm -f /usr/local/bin/xx
-        echo -e "\033[32m[+] 快捷命令 xx 已删除。\033[0m"
-    fi
-    exit 0
-}
+# ================= BBR 开启功能 =================
 
-# ================= 安装功能 =================
-install() {
-    clear
-    echo "====================================================="
-    echo "   专属配置工具: VLESS(xhttp) + Hysteria2 + 订阅生成"
-    echo "====================================================="
-    echo ""
-    echo "请选择证书配置模式："
-    echo "  1) 使用已解析的域名 (推荐，自动申请 Let's Encrypt 证书)"
-    echo "  2) 无域名，使用纯 IP + 自签证书 (需客户端开启允许不安全连接)"
-    read -p "请输入选项 [1/2] (默认 1): " CERT_MODE
-    CERT_MODE=${CERT_MODE:-1}
-
-    echo ""
-    read -p "请输入 Xray 监听端口 (默认 443): " XRAY_PORT
-    XRAY_PORT=${XRAY_PORT:-443}
-
-    read -p "请输入 Hysteria2 监听端口 (默认 8443): " HY2_PORT
-    HY2_PORT=${HY2_PORT:-8443}
-
-    UUID=$(cat /proc/sys/kernel/random/uuid)
-    HY2_PASS=$UUID
-    XHTTP_PATH=$(tr -dc a-z0-9 </dev/urandom | head -c 8)
-    SUB_PORT=$(shuf -i 10000-60000 -n 1)
-    SUB_PATH=$(tr -dc a-z0-9 </dev/urandom | head -c 10)
-
-    echo ""
-    echo "[*] 正在检查并开启 BBR 加速..."
-    if ! grep -Rqs "^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=[[:space:]]*bbr[[:space:]]*$" /etc/sysctl.conf /etc/sysctl.d 2>/dev/null; then
+enable_bbr() {
+    echo -e "${BLUE}正在开启 BBR 加速...${PLAIN}"
+    if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+        echo -e "${GREEN}BBR 已经处于开启状态。${PLAIN}"
+    else
+        # 写入配置，先删除旧的冲突行
+        sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
+        sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
         echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
         sysctl -p >/dev/null 2>&1
-        echo -e "\033[32m[+] BBR 加速已成功开启。\033[0m"
-    else
-        sysctl -p >/dev/null 2>&1
-        echo -e "\033[32m[+] BBR 已经处于配置状态。\033[0m"
+        echo -e "${GREEN}BBR 加速已成功开启！${PLAIN}"
+    fi
+    read -p "按回车键返回菜单..."
+}
+
+# ================= 安全卸载 =================
+
+uninstall() {
+    echo -e "${YELLOW}正在安全卸载服务...${PLAIN}"
+    systemctl stop xray hysteria-server sub-server 2>/dev/null
+    systemctl disable xray hysteria-server sub-server 2>/dev/null
+    
+    if [ -f "/etc/vproxy/domain.txt" ]; then
+        DOMAIN=$(cat /etc/vproxy/domain.txt)
+        echo -e "${BLUE}正在移除域名 $DOMAIN 的证书关联...${PLAIN}"
+        ~/.acme.sh/acme.sh --remove -d "$DOMAIN" >/dev/null 2>&1
+        rm -rf ~/.acme.sh/${DOMAIN}_ecc
     fi
 
-    echo "[*] 正在安装基础环境依赖..."
-    apt update || { echo -e "\033[31m[-] apt update 失败，安装中止。\033[0m"; exit 1; }
-    apt install -y ca-certificates curl wget socat jq openssl python3 || { echo -e "\033[31m[-] apt install 失败，安装中止。\033[0m"; exit 1; }
+    rm -rf /etc/vproxy /usr/local/etc/xray /etc/hysteria /opt/sub_server
+    rm -f /etc/systemd/system/xray.service /etc/systemd/system/hysteria-server.service /etc/systemd/system/sub-server.service
+    systemctl daemon-reload
+    
+    echo -e "${GREEN}卸载完成！${PLAIN}"
+    read -p "是否删除快捷命令 xx？(y/n): " DEL_XX
+    [[ "$DEL_XX" == "y" ]] && rm -f /usr/local/bin/xx && echo -e "${GREEN}快捷命令已移除。${PLAIN}"
+    exit 0
+}
 
-    # 修改为 Xray 有权访问的目录
+# ================= 安装逻辑 =================
+
+install() {
+    echo -e "${YELLOW}正在同步系统时间与证书环境...${PLAIN}"
+    apt update -y && apt install --reinstall ca-certificates -y >/dev/null 2>&1
+    update-ca-certificates --fresh >/dev/null 2>&1
+    apt install -y curl wget socat jq openssl python3 lsof
+
+    read -p "请输入解析好的域名: " DOMAIN
+    [[ -z "$DOMAIN" ]] && exit 1
+    
+    UUID=$(cat /proc/sys/kernel/random/uuid)
+    XHTTP_PATH=$(tr -dc a-z0-9 </dev/urandom | head -c 8)
+    SUB_PORT=$(shuf -i 20000-40000 -n 1)
+    SUB_PATH=$(tr -dc a-z0-9 </dev/urandom | head -c 10)
+    CERT_DIR="/etc/vproxy"
+
+    echo -e "${BLUE}安装核心组件...${PLAIN}"
+    bash -c "$(curl -Lk https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+    bash <(curl -fsSLk https://get.hy2.sh/)
+    
+    XRAY_BIN=$(which xray || find /usr -name xray -type f | head -n 1)
+    HY2_BIN=$(which hysteria || find /usr -name hysteria -type f | head -n 1)
+
+    mkdir -p $CERT_DIR
+    echo "$DOMAIN" > $CERT_DIR/domain.txt
+    lsof -i:80 | awk 'NR==2 {print $2}' | xargs kill -9 2>/dev/null
+    [ ! -f "$HOME/.acme.sh/acme.sh" ] && curl -Lk https://get.acme.sh | sh -s email=admin@$DOMAIN
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+    ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --force --insecure
+    ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --key-file "$CERT_DIR/server.key" --fullchain-file "$CERT_DIR/server.cer"
+    chmod 644 $CERT_DIR/server.key $CERT_DIR/server.cer
+
+    # 写入 Xray 配置
     mkdir -p /usr/local/etc/xray
-    CERT_FILE="/usr/local/etc/xray/server.cer"
-    KEY_FILE="/usr/local/etc/xray/server.key"
-
-    if [ "$CERT_MODE" == "1" ]; then
-        read -p "请输入已解析的域名 (如 proxy.example.com): " DOMAIN
-        if [ -z "$DOMAIN" ]; then
-            echo "域名不能为空，退出。"
-            exit 1
-        fi
-        
-        echo "[*] 正在通过 acme.sh 申请证书 (需 80 端口放行)..."
-        ACME_INSTALLER=$(mktemp)
-        if ! curl -fsSL --max-time 15 https://get.acme.sh -o "$ACME_INSTALLER"; then
-            rm -f "$ACME_INSTALLER"
-            echo -e "\033[31m[-] acme.sh 安装包下载失败，安装中止。\033[0m"
-            exit 1
-        fi
-        if ! sh "$ACME_INSTALLER" email="admin@$DOMAIN"; then
-            rm -f "$ACME_INSTALLER"
-            echo -e "\033[31m[-] acme.sh 安装失败，安装中止。\033[0m"
-            exit 1
-        fi
-        rm -f "$ACME_INSTALLER"
-        source ~/.bashrc
-
-        ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-        ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone || {
-            echo -e "\033[31m[-] 证书申请失败，安装中止。\033[0m"
-            exit 1
-        }
-
-        ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
-        --key-file       "$KEY_FILE"  \
-        --fullchain-file "$CERT_FILE" \
-        --reloadcmd     "systemctl restart xray && systemctl restart hysteria-server"
-
-        HOST_ADDRESS=$DOMAIN
-        SNI=$DOMAIN
-    else
-        DEFAULT_IP=$(curl -fsS -4 --max-time 5 https://api.ipify.org 2>/dev/null)
-        if [ -z "$DEFAULT_IP" ]; then
-            echo -e "\033[33m[!] 无法自动获取公网 IP，请手动输入。\033[0m"
-        fi
-        read -p "请输入本机公网 IP (默认: $DEFAULT_IP): " SERVER_IP
-        SERVER_IP=${SERVER_IP:-$DEFAULT_IP}
-        if [ -z "$SERVER_IP" ]; then
-            echo -e "\033[31m[-] 未提供有效公网 IP，安装中止。\033[0m"
-            exit 1
-        fi
-        
-        echo "[*] 正在生成 10 年期自签证书..."
-        SNI="www.bing.com"
-        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-            -keyout "$KEY_FILE" \
-            -out "$CERT_FILE" \
-            -subj "/C=US/ST=CA/L=LosAngeles/O=Microsoft/CN=$SNI" >/dev/null 2>&1
-            
-        HOST_ADDRESS=$SERVER_IP
-    fi
-
-    # 【极其关键】赋予 Xray 读取证书的权限，防止进程崩溃
-    chown nobody:nogroup "$CERT_FILE" "$KEY_FILE"
-    chmod 644 "$CERT_FILE" "$KEY_FILE"
-
-    echo "[*] 正在部署/更新 Xray-core..."
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-
-cat > /usr/local/etc/xray/config.json <<EOF
+    cat > /usr/local/etc/xray/config.json <<EOF
 {
   "log": { "loglevel": "warning" },
-  "dns": {
-    "servers": [ "1.1.1.1", "8.8.8.8", "localhost" ]
-  },
-  "inbounds": [
-    {
-      "port": $XRAY_PORT,
-      "protocol": "vless",
-      "settings": {
-        "clients": [{"id": "$UUID", "flow": ""}],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "xhttp",
-        "security": "tls",
-        "tlsSettings": {
-          "certificates": [{"certificateFile": "$CERT_FILE", "keyFile": "$KEY_FILE"}]
-        },
-        "xhttpSettings": {
-          "mode": "auto",
-          "host": "$SNI",
-          "path": "/$XHTTP_PATH"
-        }
-      }
+  "inbounds": [{
+    "port": 443, "protocol": "vless",
+    "settings": { "clients": [{"id": "$UUID"}], "decryption": "none" },
+    "streamSettings": {
+      "network": "xhttp", "security": "tls",
+      "tlsSettings": { "certificates": [{"certificateFile": "$CERT_DIR/server.cer", "keyFile": "$CERT_DIR/server.key"}] },
+      "xhttpSettings": { "mode": "auto", "host": "$DOMAIN", "path": "/$XHTTP_PATH" }
     }
-  ],
-  "routing": {
-    "domainStrategy": "UseIP",
-    "rules": [
-      { "type": "field", "outboundTag": "block", "ip": ["geoip:private"] }
-    ]
-  },
-  "outbounds": [
-    { "protocol": "freedom", "tag": "direct" },
-    { "protocol": "blackhole", "tag": "block" }
-  ]
+  }],
+  "outbounds": [{ "protocol": "freedom" }]
 }
 EOF
 
-    echo "[*] 正在部署/更新 Hysteria2..."
-    bash <(curl -fsSL https://get.hy2.sh/)
-
-cat > /etc/hysteria/config.yaml <<EOF
-listen: :$HY2_PORT
+    # 写入 Hy2 配置
+    mkdir -p /etc/hysteria
+    cat > /etc/hysteria/config.yaml <<EOF
+listen: :8443
 tls:
-  cert: $CERT_FILE
-  key: $KEY_FILE
+  cert: $CERT_DIR/server.cer
+  key: $CERT_DIR/server.key
 auth:
   type: password
-  password: $HY2_PASS
-resolver:
-  type: https
-  https:
-    url: https://cloudflare-dns.com/dns-query
+  password: $UUID
 masquerade:
   type: proxy
   proxy:
-    url: https://$SNI
+    url: https://www.bing.com
     rewriteHost: true
 EOF
 
-    echo "[*] 正在生成节点链接与轻量级订阅服务..."
-    if [ "$CERT_MODE" == "1" ]; then
-        VLESS_LINK="vless://${UUID}@${HOST_ADDRESS}:${XRAY_PORT}?encryption=none&security=tls&type=xhttp&host=${SNI}&sni=${SNI}&path=%2F${XHTTP_PATH}#VLESS-xhttp"
-        HY2_LINK="hy2://${HY2_PASS}@${HOST_ADDRESS}:${HY2_PORT}/?sni=${SNI}&insecure=0#Hysteria2"
-    else
-        VLESS_LINK="vless://${UUID}@${HOST_ADDRESS}:${XRAY_PORT}?encryption=none&security=tls&type=xhttp&host=${SNI}&sni=${SNI}&path=%2F${XHTTP_PATH}&allowInsecure=1#VLESS-xhttp(IP自签)"
-        HY2_LINK="hy2://${HY2_PASS}@${HOST_ADDRESS}:${HY2_PORT}/?sni=${SNI}&insecure=1#Hysteria2(IP自签)"
-    fi
+    # 写入 Service (Root 运行确保 100% 成功)
+    cat > /etc/systemd/system/xray.service <<EOF
+[Unit]
+Description=Xray Service
+After=network.target
+[Service]
+User=root
+ExecStart=$XRAY_BIN run -config /usr/local/etc/xray/config.json
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
 
+    cat > /etc/systemd/system/hysteria-server.service <<EOF
+[Unit]
+Description=Hysteria Server
+After=network.target
+[Service]
+User=root
+ExecStart=$HY2_BIN server -c /etc/hysteria/config.yaml
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # 订阅生成
     mkdir -p "/opt/sub_server/$SUB_PATH"
+    VLESS_LINK="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&type=xhttp&host=${DOMAIN}&sni=${DOMAIN}&path=%2F${XHTTP_PATH}#VLESS-xhttp"
+    HY2_LINK="hy2://${UUID}@${DOMAIN}:8443/?sni=${DOMAIN}#Hysteria2"
     printf '%s\n' "$VLESS_LINK" "$HY2_LINK" | base64 | tr -d '\n' > "/opt/sub_server/$SUB_PATH/index.html"
 
-cat > /etc/systemd/system/sub-server.service <<EOF
+    cat > /etc/systemd/system/sub-server.service <<EOF
 [Unit]
-Description=Simple Subscription Server
-After=network.target
-
+Description=Sub Server
 [Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/sub_server
 ExecStart=/usr/bin/python3 -m http.server $SUB_PORT
+WorkingDirectory=/opt/sub_server
+User=root
 Restart=always
-
 [Install]
 WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable xray hysteria-server sub-server
+    systemctl enable --now xray hysteria-server sub-server
     systemctl restart xray hysteria-server sub-server
 
-    echo "[*] 正在将管理菜单写入系统快捷命令..."
-    TMP_SCRIPT=$(mktemp)
-    if ! curl -fsSL --max-time 10 "$SCRIPT_URL" -o "$TMP_SCRIPT"; then
-        rm -f "$TMP_SCRIPT"
-        echo -e "\033[31m[-] 下载最新脚本失败，安装中止。\033[0m"
-        exit 1
-    fi
-    if [ -f /usr/local/bin/xx ] && cmp -s "$TMP_SCRIPT" /usr/local/bin/xx; then
-        echo -e "\033[32m[+] 当前脚本已是最新版本，跳过更新。\033[0m"
-    else
-        if [ -f /usr/local/bin/xx ]; then
-            ACTION_DESC="更新"
-        else
-            ACTION_DESC="安装"
-        fi
-        install -m 755 "$TMP_SCRIPT" /usr/local/bin/xx || {
-            rm -f "$TMP_SCRIPT"
-            echo -e "\033[31m[-] 写入快捷命令失败，安装中止。\033[0m"
-            exit 1
-        }
-        echo -e "\033[32m[+] 管理脚本${ACTION_DESC}完成。\033[0m"
-    fi
-    rm -f "$TMP_SCRIPT"
-
-    clear
-    echo "====================================================="
-    echo -e "\033[32m                  部署全部完成！                     \033[0m"
-    echo "====================================================="
-    echo "【你的私密订阅链接】(直接复制到客户端更新订阅)"
-    echo -e "🔗 \033[36mhttp://${HOST_ADDRESS}:${SUB_PORT}/${SUB_PATH}/\033[0m"
-    echo "====================================================="
-    echo -e "\033[33m💡 提示: 脚本已不再干预防火墙设置。\033[0m"
-    echo -e "\033[33m   如果出现超时连不上，请确保你的系统环境和云服务商\033[0m"
-    echo -e "\033[33m   安全组已经手动放行了以下端口：\033[0m"
-    echo -e "\033[33m   TCP: 80 (仅申请证书时用), $XRAY_PORT, $SUB_PORT\033[0m"
-    echo -e "\033[33m   UDP: $XRAY_PORT, $HY2_PORT\033[0m"
-    echo "====================================================="
+    # 保存快捷命令
+    cp "$0" /usr/local/bin/xx && chmod +x /usr/local/bin/xx
+    
+    echo -e "${GREEN}部署完成！快捷命令已保存。下次请输入 xx 启动管理。${PLAIN}"
+    echo -e "🔗 订阅链接: ${BLUE}http://${DOMAIN}:${SUB_PORT}/${SUB_PATH}/${PLAIN}"
 }
 
-get_status
+# ================= 主菜单 =================
 
-clear
-echo "====================================================="
-echo "        专属科学上网搭建工具 (多协议极简版)        "
-echo "====================================================="
-echo -e "  本机 IP  : \033[36m${VPS_IP}\033[0m"
-echo -e "  脚本状态 : ${SCRIPT_STATUS}"
-echo -e "  Xray内核 : ${XRAY_STATUS}"
-echo "-----------------------------------------------------"
-echo "  1. 一键安装 / 覆盖更新 (VLESS-xhttp + Hysteria2)"
-echo "  2. 一键完全卸载 (清理所有配置与进程)"
-echo "  0. 退出"
-echo "====================================================="
-read -p "请输入对应数字进行操作: " MENU_CHOICE
+while true; do
+    get_status
+    clear
+    echo "====================================================="
+    echo -e "           专属科学上网管理工具 ${BLUE}(BBR增强版)${PLAIN}           "
+    echo "====================================================="
+    echo -e "  本机 IP   : ${BLUE}${VPS_IP}${PLAIN}"
+    echo -e "  脚本状态  : ${SCRIPT_STATUS}"
+    echo -e "  Xray内核  : ${XRAY_STATUS}"
+    echo -e "  BBR 加速  : ${BBR_STATUS}"
+    echo "-----------------------------------------------------"
+    echo "  1. 一键安装 / 覆盖更新"
+    echo "  2. 开启 BBR 系统加速"
+    echo "  3. 一键完全卸载"
+    echo "  0. 退出脚本"
+    echo "====================================================="
+    read -p "请输入数字选择: " CHOICE
 
-case $MENU_CHOICE in
-    1)
-        install
-        ;;
-    2)
-        read -p "⚠️ 确认要彻底卸载并删除所有数据吗？(y/n): " CONFIRM
-        if [[ "$CONFIRM" == "y" || "$CONFIRM" == "Y" ]]; then
-            uninstall
-        else
-            echo "已取消卸载。"
-            exit 0
-        fi
-        ;;
-    0)
-        exit 0
-        ;;
-    *)
-        echo "无效输入，已退出。"
-        exit 1
-        ;;
-esac
+    case $CHOICE in
+        1) install; break ;;
+        2) enable_bbr ;;
+        3) uninstall; break ;;
+        0) exit 0 ;;
+        *) echo "无效输入" ;;
+    esac
+done
