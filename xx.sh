@@ -112,7 +112,7 @@ install() {
 
     echo ""
     echo "[*] 正在检查并开启 BBR 加速..."
-    if ! grep -Rqs "^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=[[:space:]]*.*" /etc/sysctl.conf /etc/sysctl.d 2>/dev/null; then
+    if ! grep -Rqs "^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=[[:space:]]*bbr[[:space:]]*$" /etc/sysctl.conf /etc/sysctl.d 2>/dev/null; then
         echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
         sysctl -p >/dev/null 2>&1
@@ -165,6 +165,10 @@ install() {
         fi
         read -p "请输入本机公网 IP (默认: $DEFAULT_IP): " SERVER_IP
         SERVER_IP=${SERVER_IP:-$DEFAULT_IP}
+        if [ -z "$SERVER_IP" ]; then
+            echo -e "\033[31m[-] 未提供有效公网 IP，安装中止。\033[0m"
+            exit 1
+        fi
         
         echo "[*] 正在生成 10 年期自签证书..."
         SNI="www.bing.com"
