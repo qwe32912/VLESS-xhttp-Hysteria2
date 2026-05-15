@@ -124,7 +124,7 @@ install() {
 
     echo "[*] 正在安装基础环境依赖..."
     apt update || { echo -e "\033[31m[-] apt update 失败，安装中止。\033[0m"; exit 1; }
-    apt install -y curl wget socat jq openssl python3 || { echo -e "\033[31m[-] apt install 失败，安装中止。\033[0m"; exit 1; }
+    apt install -y ca-certificates curl wget socat jq openssl python3 || { echo -e "\033[31m[-] apt install 失败，安装中止。\033[0m"; exit 1; }
 
     # 修改为 Xray 有权访问的目录
     mkdir -p /usr/local/etc/xray
